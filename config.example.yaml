@@ -1,0 +1,8 @@
+bundle_path: /home/deploy/omnigent-agents/orchestrator
+timeout_seconds: 1800
+
+projects:
+  - name: orchestrator
+    chat_id: -1001234567890
+    workdir: /home/deploy/omnigent-workspaces/orchestrator-repo
+    allowed_user_ids: [123456789]

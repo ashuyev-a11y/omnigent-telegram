@@ -8,6 +8,8 @@ in-memory recorder.
 from __future__ import annotations
 
 import asyncio
+import importlib
+import logging
 
 import bot as bot_module
 from runner import TaskAlreadyRunningError
@@ -82,3 +84,17 @@ def test_run_task_stays_silent_on_task_already_running(monkeypatch):
 
     # Existing behavior is preserved: this race is expected and silent.
     assert context.bot.sent_messages == []
+
+
+def test_module_import_silences_httpx_info_logs():
+    # httpx logs each request at INFO, including the full request URL, which
+    # for the Telegram Bot API embeds the bot token. Reset the logger to a
+    # level that would leak that URL, then reload bot.py and confirm its
+    # module-level setup raises it back to WARNING.
+    httpx_logger = logging.getLogger("httpx")
+    httpx_logger.setLevel(logging.INFO)
+    assert httpx_logger.getEffectiveLevel() == logging.INFO
+
+    importlib.reload(bot_module)
+
+    assert httpx_logger.level == logging.WARNING

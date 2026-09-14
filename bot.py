@@ -27,6 +27,10 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+# httpx logs each request at INFO, including the full URL — which for the
+# Telegram Bot API embeds the bot token. Silence it to avoid leaking the
+# token into logs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("omnigent_telegram_bot")
 
 runner = OmnigentRunner()

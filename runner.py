@@ -196,25 +196,46 @@ class OmnigentRunner:
             stderr_chunks: list[bytes] = []
             timed_out = False
 
+            SESSION_URL_SCAN_LINES = 20
+
             async def read_stdout() -> None:
-                first_line = True
+                # `omnigent run` prints a few service lines (connecting,
+                # preparing the agent, ...) before the session URL line, so
+                # the URL is not always on the first line. Scan the first
+                # SESSION_URL_SCAN_LINES lines for it; every line, whether or
+                # not it matches, is kept in stdout_lines except the one
+                # matching line itself.
+                session_url_resolved = False
+                lines_checked = 0
+
+                async def resolve_session_url(url: Optional[str]) -> None:
+                    nonlocal session_url_resolved
+                    session_url_resolved = True
+                    state.session_url = url
+                    if on_session_url is not None:
+                        await on_session_url(url)
+
                 while True:
                     raw = await process.stdout.readline()
                     if not raw:
                         break
                     text = raw.decode(errors="replace")
-                    if first_line:
-                        first_line = False
+
+                    if not session_url_resolved and lines_checked < SESSION_URL_SCAN_LINES:
+                        lines_checked += 1
                         url = extract_session_url(text)
-                        state.session_url = url
-                        if on_session_url is not None:
-                            await on_session_url(url)
-                        if url is None:
-                            # No URL found: this is ordinary output, not the
-                            # session line the spec expects, so keep it.
-                            stdout_lines.append(text)
+                        if url is not None:
+                            await resolve_session_url(url)
+                            continue
+                        stdout_lines.append(text)
+                        if lines_checked == SESSION_URL_SCAN_LINES:
+                            await resolve_session_url(None)
                         continue
+
                     stdout_lines.append(text)
+
+                if not session_url_resolved:
+                    await resolve_session_url(None)
 
             async def read_stderr() -> None:
                 while True:

@@ -6,6 +6,7 @@ written to disk (round-trip, atomicity) rather than trusting the docstring.
 
 from __future__ import annotations
 
+import logging
 import os
 
 from state import SessionStateStore
@@ -64,6 +65,43 @@ def test_clear_on_missing_chat_id_does_not_raise(tmp_path):
     store = SessionStateStore(tmp_path / "state.json")
     store.clear(999)  # no-op, must not raise
     assert store.get(999) is None
+
+
+def test_set_logs_save_with_chat_id_and_session_id(tmp_path, caplog):
+    store = SessionStateStore(tmp_path / "state.json")
+
+    with caplog.at_level(logging.INFO, logger="state"):
+        store.set(42, "session-abc")
+
+    assert any(
+        record.levelno == logging.INFO
+        and "42" in record.getMessage()
+        and "session-abc" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_clear_logs_reset_with_chat_id(tmp_path, caplog):
+    store = SessionStateStore(tmp_path / "state.json")
+    store.set(1, "session-one")
+    caplog.clear()
+
+    with caplog.at_level(logging.INFO, logger="state"):
+        store.clear(1)
+
+    assert any(
+        record.levelno == logging.INFO and "1" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_clear_on_missing_chat_id_does_not_log(tmp_path, caplog):
+    store = SessionStateStore(tmp_path / "state.json")
+
+    with caplog.at_level(logging.INFO, logger="state"):
+        store.clear(999)  # no-op: nothing was stored for this chat_id
+
+    assert caplog.records == []
 
 
 def test_write_is_atomic_write_then_rename(tmp_path, monkeypatch):

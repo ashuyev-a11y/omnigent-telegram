@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from config import ConfigError, load_config, get_bot_token
+from config import DEFAULT_STATE_FILE, ConfigError, load_config, get_bot_token
 
 VALID_YAML = """
 bundle_path: /home/deploy/omnigent-agents/orchestrator
@@ -46,6 +46,23 @@ def test_load_valid_config(tmp_path):
     assert not project.is_allowed(999)
 
     assert config.project_for_chat(999999) is None
+
+
+def test_state_file_defaults_when_not_specified(tmp_path):
+    path = _write(tmp_path, VALID_YAML)
+
+    config = load_config(path)
+
+    assert config.state_file == DEFAULT_STATE_FILE
+
+
+def test_state_file_overridden_from_yaml(tmp_path):
+    content = VALID_YAML + "\nstate_file: /custom/path/state.json\n"
+    path = _write(tmp_path, content)
+
+    config = load_config(path)
+
+    assert config.state_file == "/custom/path/state.json"
 
 
 def test_load_config_uses_env_var_path(tmp_path, monkeypatch):

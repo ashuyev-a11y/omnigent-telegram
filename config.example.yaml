@@ -1,6 +1,11 @@
 bundle_path: /home/deploy/omnigent-agents/orchestrator
 timeout_seconds: 1800
 
+# Опционально: файл, в котором бот хранит id последней omnigent-сессии для
+# каждого чата, чтобы продолжать диалог между сообщениями. По умолчанию
+# ./state.json.
+state_file: ./state.json
+
 projects:
   - name: orchestrator
     chat_id: -1001234567890

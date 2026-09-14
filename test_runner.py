@@ -304,6 +304,86 @@ def test_run_first_line_without_url_is_not_lost(monkeypatch):
     assert result.stdout_text == "not a session line\nline two\n"
 
 
+def test_run_url_after_service_lines_is_found(monkeypatch):
+    fake_process = FakeProcess(
+        stdout_lines=[
+            b"omnigent: Connecting to the server...\n",
+            b"omnigent: Preparing your agent...\n",
+            b"omnigent: Loading bundle...\n",
+            b"Omnigent session: http://127.0.0.1:8000/c/42\n",
+            b"line one\n",
+            b"line two\n",
+        ],
+        stderr_lines=[],
+        returncode=0,
+    )
+    _patch_subprocess(monkeypatch, fake_process)
+
+    seen_urls = []
+
+    async def on_session_url(url):
+        seen_urls.append(url)
+
+    async def scenario():
+        r = OmnigentRunner()
+        return await r.run(
+            chat_id=1,
+            bundle_path="/bundle",
+            workdir="/workdir",
+            task_text="task",
+            timeout_seconds=5,
+            on_session_url=on_session_url,
+        )
+
+    result = asyncio.run(scenario())
+
+    assert seen_urls == ["http://127.0.0.1:8000/c/42"]
+    assert result.session_url == "http://127.0.0.1:8000/c/42"
+    # Service lines preceding the session line are not lost from stdout_text,
+    # and the matched session line itself is excluded.
+    assert result.stdout_text == (
+        "omnigent: Connecting to the server...\n"
+        "omnigent: Preparing your agent...\n"
+        "omnigent: Loading bundle...\n"
+        "line one\n"
+        "line two\n"
+    )
+
+
+def test_run_url_missing_entirely_keeps_all_output_and_calls_none(monkeypatch):
+    lines = [f"omnigent: service line {i}\n".encode() for i in range(25)]
+    fake_process = FakeProcess(
+        stdout_lines=lines,
+        stderr_lines=[],
+        returncode=0,
+    )
+    _patch_subprocess(monkeypatch, fake_process)
+
+    seen_urls = []
+
+    async def on_session_url(url):
+        seen_urls.append(url)
+
+    async def scenario():
+        r = OmnigentRunner()
+        return await r.run(
+            chat_id=1,
+            bundle_path="/bundle",
+            workdir="/workdir",
+            task_text="task",
+            timeout_seconds=5,
+            on_session_url=on_session_url,
+        )
+
+    result = asyncio.run(scenario())
+
+    assert seen_urls == [None]
+    assert result.session_url is None
+    # Nothing was dropped: all 25 lines (past the 20-line scan window too)
+    # are present in the final stdout_text.
+    assert result.stdout_text == "".join(line.decode() for line in lines)
+
+
 def test_run_nonzero_returncode_reports_stderr(monkeypatch):
     fake_process = FakeProcess(
         stdout_lines=[b"Omnigent session: http://127.0.0.1:8000/c/1\n"],

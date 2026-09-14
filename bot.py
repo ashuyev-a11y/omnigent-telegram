@@ -34,6 +34,9 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+# httpx logs the full request URL at INFO, and the Telegram Bot API URL
+# contains the bot token — avoid leaking it into logs.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("omnigent_telegram_bot")
 
 runner = OmnigentRunner()
@@ -175,7 +178,13 @@ async def _run_task(
                 sessions.set(chat_id, session_id)
             await context.bot.send_message(chat_id=chat_id, text=f"Сессия принята: {url}")
         else:
-            await context.bot.send_message(chat_id=chat_id, text="Задача запущена.")
+            sessions.clear(chat_id)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Задача запущена, но ссылка на сессию недоступна. "
+                "Продолжить эту сессию следующим сообщением будет нельзя — "
+                "оно начнёт разговор заново.",
+            )
 
     async def report_resume_failed() -> None:
         sessions.clear(chat_id)

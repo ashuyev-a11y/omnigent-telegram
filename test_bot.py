@@ -10,6 +10,7 @@ pointed at a tmp_path file, so tests exercise the actual persistence too.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import bot as bot_module
 from runner import TaskAlreadyRunningError
@@ -212,6 +213,44 @@ def test_run_task_plain_failure_without_resume_reports_normal_error(monkeypatch,
     assert "сброшена" not in text
 
 
+def test_run_task_on_session_url_none_clears_session_and_notifies(monkeypatch, tmp_path):
+    sessions = SessionStateStore(tmp_path / "state.json")
+    sessions.set(123, "old-session-id")
+
+    async def fake_run(**kwargs):
+        # Simulate the runner scanning stdout and never finding a session
+        # URL line: it invokes the callback with None before returning.
+        await kwargs["on_session_url"](None)
+        return FakeRunResult(returncode=0, stdout_text="ok")
+
+    monkeypatch.setattr(bot_module.runner, "run", fake_run)
+
+    context = FakeContext()
+
+    asyncio.run(
+        bot_module._run_task(
+            context,
+            chat_id=123,
+            config=FakeConfig(),
+            project=FakeProject(),
+            task_text="do it",
+            sessions=sessions,
+        )
+    )
+
+    # A previously stored session for this chat must not be left pointing at
+    # a session we no longer have a URL for.
+    assert sessions.get(123) is None
+
+    # The chat is told the link is unavailable, not the old generic
+    # "Задача запущена." message.
+    session_url_messages = [
+        text for _, text in context.bot.sent_messages if "Задача запущена." == text
+    ]
+    assert session_url_messages == []
+    assert any("ссылка на сессию" in text for _, text in context.bot.sent_messages)
+
+
 def test_new_command_clears_session_and_confirms(tmp_path):
     sessions = SessionStateStore(tmp_path / "state.json")
     sessions.set(789, "some-session-id")
@@ -240,3 +279,10 @@ def test_new_command_clears_session_and_confirms(tmp_path):
     assert sessions.get(789) is None
     assert len(update.effective_chat.sent) == 1
     assert "сброшена" in update.effective_chat.sent[0]
+
+
+def test_httpx_logger_is_set_to_warning():
+    # httpx logs the full request URL at INFO, and Telegram Bot API URLs
+    # embed the bot token: importing bot.py must silence it to avoid
+    # leaking the token into logs.
+    assert logging.getLogger("httpx").level == logging.WARNING

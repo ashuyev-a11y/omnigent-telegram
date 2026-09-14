@@ -13,6 +13,7 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,20 @@ def extract_session_url(line: str) -> Optional[str]:
     """
     match = SESSION_URL_RE.search(line)
     return match.group(1) if match else None
+
+
+def extract_session_id(url: str) -> Optional[str]:
+    """Extract the session id from a session URL (its last path segment).
+
+    For ``http://127.0.0.1:8000/c/abc123`` returns ``abc123``. Returns
+    ``None`` on empty or malformed input (no non-empty path segment).
+    """
+    if not url:
+        return None
+
+    path = urlsplit(url).path
+    segment = path.rstrip("/").rsplit("/", 1)[-1]
+    return segment or None
 
 
 def split_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
@@ -140,8 +155,13 @@ class OmnigentRunner:
         task_text: str,
         timeout_seconds: float,
         on_session_url: Optional[OnSessionUrl] = None,
+        resume_session_id: Optional[str] = None,
     ) -> RunResult:
         """Start `omnigent run` for ``chat_id`` and wait for it to finish.
+
+        When ``resume_session_id`` is given (non-empty), ``--resume
+        <resume_session_id>`` is appended to the command so the run
+        continues that omnigent session instead of starting a new one.
 
         Raises :class:`TaskAlreadyRunningError` if a task is already running
         for this chat. The check-and-register step is synchronous (no
@@ -157,6 +177,8 @@ class OmnigentRunner:
 
         try:
             command = ["omnigent", "run", bundle_path, "-p", task_text]
+            if resume_session_id:
+                command += ["--resume", resume_session_id]
             logger.info("task started chat_id=%s", chat_id)
 
             process = await asyncio.create_subprocess_exec(

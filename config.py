@@ -12,6 +12,7 @@ import yaml
 DEFAULT_CONFIG_PATH = "./config.yaml"
 CONFIG_PATH_ENV_VAR = "OMNIGENT_TG_CONFIG"
 BOT_TOKEN_ENV_VAR = "TELEGRAM_BOT_TOKEN"
+DEFAULT_STATE_FILE = "./state.json"
 
 
 class ConfigError(Exception):
@@ -34,6 +35,7 @@ class Config:
     bundle_path: str
     timeout_seconds: int
     projects: tuple[ProjectConfig, ...]
+    state_file: str = DEFAULT_STATE_FILE
 
     def project_for_chat(self, chat_id: int) -> Optional[ProjectConfig]:
         for project in self.projects:
@@ -121,10 +123,19 @@ def load_config(path: Union[str, os.PathLike, None] = None) -> Config:
             raise ConfigError(f"Duplicate chat_id in config: {project.chat_id}")
         seen_chat_ids.add(project.chat_id)
 
+    raw_state_file = raw.get("state_file")
+    if raw_state_file is None:
+        state_file = DEFAULT_STATE_FILE
+    else:
+        if not isinstance(raw_state_file, str) or not raw_state_file:
+            raise ConfigError("state_file must be a non-empty string")
+        state_file = raw_state_file
+
     return Config(
         bundle_path=str(bundle_path),
         timeout_seconds=timeout_seconds,
         projects=tuple(projects),
+        state_file=state_file,
     )
 
 

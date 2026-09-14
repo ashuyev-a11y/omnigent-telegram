@@ -21,7 +21,14 @@ from telegram.ext import (
 )
 
 from config import Config, ProjectConfig, get_bot_token, load_config
-from runner import OmnigentRunner, TaskAlreadyRunningError, split_message, tail_text
+from runner import (
+    OmnigentRunner,
+    TaskAlreadyRunningError,
+    extract_session_id,
+    split_message,
+    tail_text,
+)
+from state import SessionStateStore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,8 +80,10 @@ async def start_command(
         "omnigent-telegram\n"
         f"Проект этого чата: {project.name}\n\n"
         "Отправьте текст задачи обычным сообщением, чтобы запустить оркестратор.\n"
+        "Следующее сообщение продолжает предыдущую сессию в этом чате.\n"
         "/status — статус текущей задачи.\n"
-        "/cancel — прервать текущую задачу."
+        "/cancel — прервать текущую задачу.\n"
+        "/new — начать новую сессию с чистого листа."
     )
 
 
@@ -87,8 +96,29 @@ async def status_command(
         url = runner.get_session_url(chat_id)
         text = f"Задача выполняется.\nСессия: {url}" if url else "Задача выполняется, сессия ещё не назначена."
     else:
-        text = "Нет активной задачи."
+        sessions: SessionStateStore = context.bot_data["sessions"]
+        session_id = sessions.get(chat_id)
+        if session_id:
+            text = (
+                "Нет активной задачи.\n"
+                f"Сессия продолжается: {session_id}\n"
+                "Следующее сообщение продолжит её; /new — начать заново."
+            )
+        else:
+            text = "Нет активной задачи. Следующее сообщение начнёт новый разговор."
     await update.effective_chat.send_message(text)
+
+
+@authorized
+async def new_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, project: ProjectConfig
+) -> None:
+    chat_id = update.effective_chat.id
+    sessions: SessionStateStore = context.bot_data["sessions"]
+    sessions.clear(chat_id)
+    await update.effective_chat.send_message(
+        "Сессия сброшена. Следующее сообщение начнёт разговор с чистого листа."
+    )
 
 
 @authorized
@@ -119,11 +149,12 @@ async def handle_task_message(
         return
 
     config: Config = context.bot_data["config"]
+    sessions: SessionStateStore = context.bot_data["sessions"]
     # Fire-and-forget: the handler must return immediately so the bot keeps
     # answering /status and /cancel (in this and other chats) while the
     # orchestrator subprocess runs.
     context.application.create_task(
-        _run_task(context, chat_id, config, project, task_text)
+        _run_task(context, chat_id, config, project, task_text, sessions)
     )
 
 
@@ -133,12 +164,29 @@ async def _run_task(
     config: Config,
     project: ProjectConfig,
     task_text: str,
+    sessions: SessionStateStore,
 ) -> None:
+    resume_id = sessions.get(chat_id)
+
     async def on_session_url(url: Optional[str]) -> None:
         if url:
+            session_id = extract_session_id(url)
+            if session_id:
+                sessions.set(chat_id, session_id)
             await context.bot.send_message(chat_id=chat_id, text=f"Сессия принята: {url}")
         else:
             await context.bot.send_message(chat_id=chat_id, text="Задача запущена.")
+
+    async def report_resume_failed() -> None:
+        sessions.clear(chat_id)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "Не удалось продолжить предыдущую сессию (возможно, она устарела "
+                "или была удалена на сервере). Сессия сброшена — повторите "
+                "задачу, она начнётся заново."
+            ),
+        )
 
     try:
         result = await runner.run(
@@ -148,6 +196,7 @@ async def _run_task(
             task_text=task_text,
             timeout_seconds=config.timeout_seconds,
             on_session_url=on_session_url,
+            resume_session_id=resume_id,
         )
     except TaskAlreadyRunningError:
         # Shouldn't normally happen (handle_task_message already checks),
@@ -158,9 +207,12 @@ async def _run_task(
         # must still reach the chat per SPEC.md #6 instead of vanishing into
         # the fire-and-forget task created by handle_task_message.
         logger.exception("task crashed chat_id=%s", chat_id)
-        await context.bot.send_message(
-            chat_id=chat_id, text=f"Ошибка выполнения задачи: {exc}"
-        )
+        if resume_id:
+            await report_resume_failed()
+        else:
+            await context.bot.send_message(
+                chat_id=chat_id, text=f"Ошибка выполнения задачи: {exc}"
+            )
         return
 
     if result.timed_out:
@@ -172,6 +224,10 @@ async def _run_task(
 
     if result.cancelled:
         await context.bot.send_message(chat_id=chat_id, text="Задача прервана.")
+        return
+
+    if resume_id and result.returncode not in (0, None):
+        await report_resume_failed()
         return
 
     if result.returncode != 0:
@@ -190,9 +246,11 @@ async def _run_task(
 def build_application(config: Config, token: str) -> Application:
     application = Application.builder().token(token).build()
     application.bot_data["config"] = config
+    application.bot_data["sessions"] = SessionStateStore(config.state_file)
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
+    application.add_handler(CommandHandler("new", new_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task_message))
     return application
 

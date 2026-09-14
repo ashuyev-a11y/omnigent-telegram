@@ -14,6 +14,7 @@ import runner as runner_module
 from runner import (
     OmnigentRunner,
     TaskAlreadyRunningError,
+    extract_session_id,
     extract_session_url,
     split_message,
     tail_text,
@@ -32,6 +33,28 @@ def test_extract_session_url_matches():
 
 def test_extract_session_url_no_match_returns_none():
     assert extract_session_url("some unrelated first line\n") is None
+
+
+# ---------------------------------------------------------------------------
+# extract_session_id
+# ---------------------------------------------------------------------------
+
+
+def test_extract_session_id_takes_last_path_segment():
+    assert extract_session_id("http://127.0.0.1:8000/c/abc123") == "abc123"
+
+
+def test_extract_session_id_strips_trailing_slash():
+    assert extract_session_id("http://127.0.0.1:8000/c/abc123/") == "abc123"
+
+
+def test_extract_session_id_empty_input_returns_none():
+    assert extract_session_id("") is None
+
+
+def test_extract_session_id_no_path_returns_none():
+    assert extract_session_id("http://127.0.0.1:8000") is None
+    assert extract_session_id("http://127.0.0.1:8000/") is None
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +210,62 @@ def test_run_success_extracts_url_and_returns_stdout(monkeypatch):
     # command passed as an argument list, never a shell string
     assert calls[0]["args"] == ("omnigent", "run", "/bundle", "-p", "do the thing")
     assert calls[0]["kwargs"]["cwd"] == "/workdir"
+
+
+def test_run_with_resume_session_id_adds_resume_flag(monkeypatch):
+    fake_process = FakeProcess(
+        stdout_lines=[b"Omnigent session: http://127.0.0.1:8000/c/42\n"],
+        stderr_lines=[],
+        returncode=0,
+    )
+    calls = _patch_subprocess(monkeypatch, fake_process)
+
+    async def scenario():
+        r = OmnigentRunner()
+        return await r.run(
+            chat_id=1,
+            bundle_path="/bundle",
+            workdir="/workdir",
+            task_text="continue please",
+            timeout_seconds=5,
+            resume_session_id="prev-session-id",
+        )
+
+    asyncio.run(scenario())
+
+    assert calls[0]["args"] == (
+        "omnigent",
+        "run",
+        "/bundle",
+        "-p",
+        "continue please",
+        "--resume",
+        "prev-session-id",
+    )
+
+
+def test_run_without_resume_session_id_omits_resume_flag(monkeypatch):
+    fake_process = FakeProcess(
+        stdout_lines=[b"Omnigent session: http://127.0.0.1:8000/c/42\n"],
+        stderr_lines=[],
+        returncode=0,
+    )
+    calls = _patch_subprocess(monkeypatch, fake_process)
+
+    async def scenario():
+        r = OmnigentRunner()
+        return await r.run(
+            chat_id=1,
+            bundle_path="/bundle",
+            workdir="/workdir",
+            task_text="fresh start",
+            timeout_seconds=5,
+        )
+
+    asyncio.run(scenario())
+
+    assert calls[0]["args"] == ("omnigent", "run", "/bundle", "-p", "fresh start")
+    assert "--resume" not in calls[0]["args"]
 
 
 def test_run_first_line_without_url_is_not_lost(monkeypatch):

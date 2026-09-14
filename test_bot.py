@@ -13,6 +13,7 @@ import asyncio
 import logging
 
 import bot as bot_module
+import runner as runner_module
 from runner import TaskAlreadyRunningError
 from state import SessionStateStore
 
@@ -56,6 +57,39 @@ class FakeRunResult:
         self.timed_out = timed_out
         self.cancelled = cancelled
         self.session_url = session_url
+
+
+class FakeStreamReader:
+    """Minimal stand-in for asyncio.StreamReader, matching test_runner.py."""
+
+    def __init__(self, lines: list[bytes]):
+        self._lines = list(lines)
+
+    async def readline(self) -> bytes:
+        if self._lines:
+            return self._lines.pop(0)
+        return b""
+
+
+class FakeSubprocess:
+    """Minimal stand-in for the process object asyncio.create_subprocess_exec
+    returns, matching the FakeProcess used in test_runner.py."""
+
+    def __init__(self, stdout_lines, stderr_lines, returncode=0):
+        self.stdout = FakeStreamReader(stdout_lines)
+        self.stderr = FakeStreamReader(stderr_lines)
+        self.returncode = returncode
+        self.terminated = False
+        self.killed = False
+
+    async def wait(self):
+        return self.returncode
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.killed = True
 
 
 def test_run_task_reports_unexpected_exception_to_chat(monkeypatch, tmp_path):
@@ -279,6 +313,142 @@ def test_new_command_clears_session_and_confirms(tmp_path):
     assert sessions.get(789) is None
     assert len(update.effective_chat.sent) == 1
     assert "сброшена" in update.effective_chat.sent[0]
+
+
+def test_run_task_persists_session_and_survives_later_unrelated_failure(monkeypatch, tmp_path):
+    """End-to-end regression test for the reported bug: state.json ends up
+    losing a session_id that was legitimately extracted from stderr and
+    already shown to the user in the chat.
+
+    Exercises the real `OmnigentRunner.run` (only asyncio.create_subprocess_exec
+    is faked, as in test_runner.py) together with the real `_run_task` and a
+    real `SessionStateStore` backed by a file on disk, end to end:
+
+    1. A fresh task run: `omnigent run` prints a session URL on stderr, which
+       is extracted and persisted to state.json.
+    2. A fresh SessionStateStore instance (simulating a new bot process)
+       reads the same session_id back from disk.
+    3. A follow-up run resumes that session (--resume is passed through).
+       During the run, on_session_url fires again with a (new) session URL —
+       confirming the resume worked and reporting it to the chat — but the
+       subprocess then exits with a nonzero code for an unrelated reason.
+       The just-confirmed session_id must NOT be wiped back out: on
+       unpatched main, `report_resume_failed()` runs unconditionally on any
+       nonzero returncode while resume_id is set, clearing the session that
+       on_session_url only just saved.
+    4. A third run picks up that surviving session_id via `sessions.get()`
+       and threads it into the next `runner.run(resume_session_id=...)`
+       call, proving the persisted value is actually used, not just present
+       on disk.
+    """
+    state_path = tmp_path / "state.json"
+    sessions = SessionStateStore(state_path)
+
+    processes = [
+        FakeSubprocess(
+            stdout_lines=[b"first answer\n"],
+            stderr_lines=[b"Omnigent session: http://127.0.0.1:8000/c/session-a\n"],
+            returncode=0,
+        ),
+        FakeSubprocess(
+            stdout_lines=[],
+            stderr_lines=[b"Omnigent session: http://127.0.0.1:8000/c/session-b\n"],
+            returncode=1,  # unrelated failure, e.g. the agent's task itself errored
+        ),
+        FakeSubprocess(
+            stdout_lines=[b"third answer\n"],
+            stderr_lines=[b"Omnigent session: http://127.0.0.1:8000/c/session-b\n"],
+            returncode=0,
+        ),
+    ]
+    calls = []
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+        return processes[len(calls) - 1]
+
+    monkeypatch.setattr(
+        runner_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    )
+
+    context = FakeContext()
+
+    # --- Run 1: fresh task, no prior session for this chat.
+    asyncio.run(
+        bot_module._run_task(
+            context,
+            chat_id=123,
+            config=FakeConfig(),
+            project=FakeProject(),
+            task_text="first task",
+            sessions=sessions,
+        )
+    )
+
+    assert calls[0]["args"] == ("omnigent", "run", "/bundle", "-p", "first task")
+
+    # (a)+(b): the session URL from stderr was extracted and persisted.
+    # Read it back via a brand-new store pointed at the same file, simulating
+    # a fresh bot process rather than trusting in-memory state.
+    fresh_store = SessionStateStore(state_path)
+    assert fresh_store.get(123) == "session-a"
+
+    # --- Run 2: resumes session-a. A new session URL is confirmed on stderr
+    # (resume succeeded) but the run then fails for an unrelated reason.
+    asyncio.run(
+        bot_module._run_task(
+            context,
+            chat_id=123,
+            config=FakeConfig(),
+            project=FakeProject(),
+            task_text="second task",
+            sessions=sessions,
+        )
+    )
+
+    assert calls[1]["args"] == (
+        "omnigent",
+        "run",
+        "/bundle",
+        "-p",
+        "second task",
+        "--resume",
+        "session-a",
+    )
+
+    # The chat was told the (new) session was accepted...
+    assert any(
+        "Сессия принята" in text and "session-b" in text
+        for _, text in context.bot.sent_messages
+    )
+    # ...and that confirmed session_id must survive the later unrelated
+    # failure: it must not be reset back to nothing.
+    fresh_store = SessionStateStore(state_path)
+    assert fresh_store.get(123) == "session-b"
+
+    # --- Run 3: the next _run_task invocation must read the surviving
+    # session_id via sessions.get() and thread it into runner.run() as
+    # resume_session_id.
+    asyncio.run(
+        bot_module._run_task(
+            context,
+            chat_id=123,
+            config=FakeConfig(),
+            project=FakeProject(),
+            task_text="third task",
+            sessions=SessionStateStore(state_path),
+        )
+    )
+
+    assert calls[2]["args"] == (
+        "omnigent",
+        "run",
+        "/bundle",
+        "-p",
+        "third task",
+        "--resume",
+        "session-b",
+    )
 
 
 def test_httpx_logger_is_set_to_warning():

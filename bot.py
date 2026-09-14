@@ -170,12 +170,22 @@ async def _run_task(
     sessions: SessionStateStore,
 ) -> None:
     resume_id = sessions.get(chat_id)
+    # Whether *this* run confirmed a session (new or continued) via a real
+    # session URL on stderr. Set from inside on_session_url, which may fire
+    # (and persist a session_id through sessions.set) before runner.run()
+    # returns or raises. A later step in this same call — the nonzero-
+    # returncode resume check below, or the exception handler — must not
+    # clobber that just-confirmed, chat-visible session_id just because
+    # `resume_id` (captured above, before the run) is truthy.
+    session_confirmed_this_run = False
 
     async def on_session_url(url: Optional[str]) -> None:
+        nonlocal session_confirmed_this_run
         if url:
             session_id = extract_session_id(url)
             if session_id:
                 sessions.set(chat_id, session_id)
+                session_confirmed_this_run = True
             await context.bot.send_message(chat_id=chat_id, text=f"Сессия принята: {url}")
         else:
             sessions.clear(chat_id)
@@ -216,7 +226,7 @@ async def _run_task(
         # must still reach the chat per SPEC.md #6 instead of vanishing into
         # the fire-and-forget task created by handle_task_message.
         logger.exception("task crashed chat_id=%s", chat_id)
-        if resume_id:
+        if resume_id and not session_confirmed_this_run:
             await report_resume_failed()
         else:
             await context.bot.send_message(
@@ -235,7 +245,7 @@ async def _run_task(
         await context.bot.send_message(chat_id=chat_id, text="Задача прервана.")
         return
 
-    if resume_id and result.returncode not in (0, None):
+    if resume_id and result.returncode not in (0, None) and not session_confirmed_this_run:
         await report_resume_failed()
         return
 

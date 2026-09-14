@@ -8,10 +8,13 @@ chat can resume the previous session instead of starting from scratch.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 from pathlib import Path
 from typing import Optional, Union
+
+logger = logging.getLogger(__name__)
 
 
 class SessionStateStore:
@@ -67,9 +70,11 @@ class SessionStateStore:
         data = self._read_all()
         data[str(chat_id)] = session_id
         self._write_all(data)
+        logger.info("session saved chat_id=%s session_id=%s", chat_id, session_id)
 
     def clear(self, chat_id: int) -> None:
         data = self._read_all()
         if str(chat_id) in data:
             del data[str(chat_id)]
             self._write_all(data)
+            logger.info("session cleared chat_id=%s", chat_id)

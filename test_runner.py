@@ -189,6 +189,42 @@ def test_run_success_extracts_url_and_returns_stdout(monkeypatch):
     assert calls[0]["kwargs"]["cwd"] == "/workdir"
 
 
+def test_run_first_line_without_url_is_not_lost(monkeypatch):
+    fake_process = FakeProcess(
+        stdout_lines=[
+            b"not a session line\n",
+            b"line two\n",
+        ],
+        stderr_lines=[],
+        returncode=0,
+    )
+    _patch_subprocess(monkeypatch, fake_process)
+
+    seen_urls = []
+
+    async def on_session_url(url):
+        seen_urls.append(url)
+
+    async def scenario():
+        r = OmnigentRunner()
+        return await r.run(
+            chat_id=1,
+            bundle_path="/bundle",
+            workdir="/workdir",
+            task_text="task",
+            timeout_seconds=5,
+            on_session_url=on_session_url,
+        )
+
+    result = asyncio.run(scenario())
+
+    assert seen_urls == [None]
+    assert result.session_url is None
+    # The first line is preserved in the output instead of being dropped,
+    # since it was not actually the session URL line.
+    assert result.stdout_text == "not a session line\nline two\n"
+
+
 def test_run_nonzero_returncode_reports_stderr(monkeypatch):
     fake_process = FakeProcess(
         stdout_lines=[b"Omnigent session: http://127.0.0.1:8000/c/1\n"],

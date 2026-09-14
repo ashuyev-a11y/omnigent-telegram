@@ -180,15 +180,19 @@ class OmnigentRunner:
                     raw = await process.stdout.readline()
                     if not raw:
                         break
+                    text = raw.decode(errors="replace")
                     if first_line:
                         first_line = False
-                        text = raw.decode(errors="replace")
                         url = extract_session_url(text)
                         state.session_url = url
                         if on_session_url is not None:
                             await on_session_url(url)
+                        if url is None:
+                            # No URL found: this is ordinary output, not the
+                            # session line the spec expects, so keep it.
+                            stdout_lines.append(text)
                         continue
-                    stdout_lines.append(raw.decode(errors="replace"))
+                    stdout_lines.append(text)
 
             async def read_stderr() -> None:
                 while True:

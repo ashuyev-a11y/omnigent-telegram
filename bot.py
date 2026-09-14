@@ -153,6 +153,15 @@ async def _run_task(
         # Shouldn't normally happen (handle_task_message already checks),
         # but guards against a race without ever queuing or running in parallel.
         return
+    except Exception as exc:
+        # Anything else (subprocess failed to start, unexpected bug, ...)
+        # must still reach the chat per SPEC.md #6 instead of vanishing into
+        # the fire-and-forget task created by handle_task_message.
+        logger.exception("task crashed chat_id=%s", chat_id)
+        await context.bot.send_message(
+            chat_id=chat_id, text=f"Ошибка выполнения задачи: {exc}"
+        )
+        return
 
     if result.timed_out:
         suffix = f"\nСессия: {result.session_url}" if result.session_url else ""

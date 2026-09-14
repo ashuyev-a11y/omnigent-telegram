@@ -170,14 +170,19 @@ def _patch_subprocess(monkeypatch, fake_process):
     return calls
 
 
-def test_run_success_extracts_url_and_returns_stdout(monkeypatch):
+def test_run_success_extracts_url_from_stderr_and_returns_stdout(monkeypatch):
+    # The session URL, along with other service lines, arrives on stderr;
+    # stdout carries only the agent's real answer.
     fake_process = FakeProcess(
         stdout_lines=[
-            b"Omnigent session: http://127.0.0.1:8000/c/42\n",
             b"line one\n",
             b"line two\n",
         ],
-        stderr_lines=[],
+        stderr_lines=[
+            b"omnigent: Connecting to the server...\n",
+            b"omnigent: Preparing your agent...\n",
+            b"Omnigent session: http://127.0.0.1:8000/c/42\n",
+        ],
         returncode=0,
     )
     calls = _patch_subprocess(monkeypatch, fake_process)
@@ -203,6 +208,13 @@ def test_run_success_extracts_url_and_returns_stdout(monkeypatch):
     assert seen_urls == ["http://127.0.0.1:8000/c/42"]
     assert result.session_url == "http://127.0.0.1:8000/c/42"
     assert result.stdout_text == "line one\nline two\n"
+    # stderr_text still contains every stderr line verbatim, including the
+    # matched session-URL line itself (nothing is filtered out of stderr).
+    assert result.stderr_text == (
+        "omnigent: Connecting to the server...\n"
+        "omnigent: Preparing your agent...\n"
+        "Omnigent session: http://127.0.0.1:8000/c/42\n"
+    )
     assert result.returncode == 0
     assert not result.timed_out
     assert not result.cancelled
@@ -268,11 +280,14 @@ def test_run_without_resume_session_id_omits_resume_flag(monkeypatch):
     assert "--resume" not in calls[0]["args"]
 
 
-def test_run_first_line_without_url_is_not_lost(monkeypatch):
+def test_run_stdout_is_never_parsed_or_filtered(monkeypatch):
+    # stdout must never be scanned for a session URL: even a line that would
+    # have matched the old (stdout-side) regex must pass through untouched.
     fake_process = FakeProcess(
         stdout_lines=[
-            b"not a session line\n",
-            b"line two\n",
+            b"Omnigent session: http://127.0.0.1:8000/c/should-not-be-extracted\n",
+            b"more real content\n",
+            b"final line\n",
         ],
         stderr_lines=[],
         returncode=0,
@@ -297,64 +312,24 @@ def test_run_first_line_without_url_is_not_lost(monkeypatch):
 
     result = asyncio.run(scenario())
 
+    # No URL in stderr, so session_url resolves to None regardless of what
+    # stdout contains.
     assert seen_urls == [None]
     assert result.session_url is None
-    # The first line is preserved in the output instead of being dropped,
-    # since it was not actually the session URL line.
-    assert result.stdout_text == "not a session line\nline two\n"
-
-
-def test_run_url_after_service_lines_is_found(monkeypatch):
-    fake_process = FakeProcess(
-        stdout_lines=[
-            b"omnigent: Connecting to the server...\n",
-            b"omnigent: Preparing your agent...\n",
-            b"omnigent: Loading bundle...\n",
-            b"Omnigent session: http://127.0.0.1:8000/c/42\n",
-            b"line one\n",
-            b"line two\n",
-        ],
-        stderr_lines=[],
-        returncode=0,
-    )
-    _patch_subprocess(monkeypatch, fake_process)
-
-    seen_urls = []
-
-    async def on_session_url(url):
-        seen_urls.append(url)
-
-    async def scenario():
-        r = OmnigentRunner()
-        return await r.run(
-            chat_id=1,
-            bundle_path="/bundle",
-            workdir="/workdir",
-            task_text="task",
-            timeout_seconds=5,
-            on_session_url=on_session_url,
-        )
-
-    result = asyncio.run(scenario())
-
-    assert seen_urls == ["http://127.0.0.1:8000/c/42"]
-    assert result.session_url == "http://127.0.0.1:8000/c/42"
-    # Service lines preceding the session line are not lost from stdout_text,
-    # and the matched session line itself is excluded.
+    # stdout_text is the complete, unmodified concatenation of every stdout
+    # line, including the one that looks like a session-URL line.
     assert result.stdout_text == (
-        "omnigent: Connecting to the server...\n"
-        "omnigent: Preparing your agent...\n"
-        "omnigent: Loading bundle...\n"
-        "line one\n"
-        "line two\n"
+        "Omnigent session: http://127.0.0.1:8000/c/should-not-be-extracted\n"
+        "more real content\n"
+        "final line\n"
     )
 
 
-def test_run_url_missing_entirely_keeps_all_output_and_calls_none(monkeypatch):
+def test_run_stderr_url_missing_entirely_resolves_to_none_and_keeps_stderr(monkeypatch):
     lines = [f"omnigent: service line {i}\n".encode() for i in range(25)]
     fake_process = FakeProcess(
-        stdout_lines=lines,
-        stderr_lines=[],
+        stdout_lines=[b"answer\n"],
+        stderr_lines=lines,
         returncode=0,
     )
     _patch_subprocess(monkeypatch, fake_process)
@@ -379,9 +354,10 @@ def test_run_url_missing_entirely_keeps_all_output_and_calls_none(monkeypatch):
 
     assert seen_urls == [None]
     assert result.session_url is None
+    assert result.stdout_text == "answer\n"
     # Nothing was dropped: all 25 lines (past the 20-line scan window too)
-    # are present in the final stdout_text.
-    assert result.stdout_text == "".join(line.decode() for line in lines)
+    # are present in the final stderr_text.
+    assert result.stderr_text == "".join(line.decode() for line in lines)
 
 
 def test_run_nonzero_returncode_reports_stderr(monkeypatch):

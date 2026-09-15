@@ -53,10 +53,23 @@ python3.12 --version && git --version && gh auth status && omnigent --version &&
 
 ### 1. Склонируйте репозиторий бота
 
+Клонируйте сразу в ту директорию, на которую ссылаются systemd-юнит и все
+дальнейшие команды этого README (`/home/deploy/omnigent-workspaces/telegram-bot`).
+Если склонировать без указания пути, git создаст директорию `omnigent-telegram`
+по имени репозитория, и systemd-юнит из шага 9 не найдёт ни `bot.py`, ни venv —
+поэтому путь ниже обязателен, а не просто пример:
+
 ```bash
-git clone https://github.com/ashuyev-a11y/omnigent-telegram.git
-cd omnigent-telegram
+sudo mkdir -p /home/deploy/omnigent-workspaces
+sudo chown "$(id -un)":"$(id -gn)" /home/deploy/omnigent-workspaces
+git clone https://github.com/ashuyev-a11y/omnigent-telegram.git \
+  /home/deploy/omnigent-workspaces/telegram-bot
+cd /home/deploy/omnigent-workspaces/telegram-bot
 ```
+
+Разворачиваете на другом пользователе или в другом месте — замените
+`/home/deploy/omnigent-workspaces/telegram-bot` на свой путь везде по этому
+README (шаги 5, 9, 11): важно, чтобы путь был один и тот же во всех местах.
 
 ### 2. Создайте venv и поставьте зависимости
 
